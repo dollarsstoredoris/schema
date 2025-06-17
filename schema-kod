@@ -1,1 +1,134 @@
+function onOpen() {
+  const ui = SpreadsheetApp.getUi();
+  ui.createMenu("🛠 Schemaverktyg")
+    .addItem("Uppdatera schema", "uppdateraSchema")
+    .addToUi();
+}
+
+function uppdateraSchema() {
+  const ss = SpreadsheetApp.getActive();
+  const sheet = ss.getSheetByName("Schema");
+  const grund = ss.getSheetByName("Grundschema");
+  const personal = ss.getSheetByName("Personal");
+
+  const idag = new Date();
+  const veckaStart = new Date(idag);
+  veckaStart.setDate(veckaStart.getDate() - veckaStart.getDay());
+
+  const fyraVeckorFram = new Date(veckaStart);
+  fyraVeckorFram.setDate(fyraVeckorFram.getDate() + 28);
+
+  const headers = ["Datum", "Fm", "Xtra", "Dagtid", "Em", "Natt", "Övrigt"];
+  const firstRow = sheet.getRange(1, 1, 1, headers.length).getValues()[0];
+  const hasHeader = firstRow.some(cell => typeof cell === "string" && cell.toLowerCase().includes("datum"));
+  if (!hasHeader) {
+    sheet.insertRowBefore(1);
+    sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+    sheet.setFrozenRows(1);
+  }
+
+  const data = sheet.getDataRange().getValues();
+  const datumMap = new Map();
+  for (let i = data.length - 1; i > 0; i--) {
+    const datum = new Date(data[i][0]);
+    const datumStr = Utilities.formatDate(datum, "Europe/Stockholm", "yyyy-MM-dd");
+    if (isNaN(datum)) continue;
+    if (datum < veckaStart || datumMap.has(datumStr)) {
+      sheet.deleteRow(i + 1);
+    } else {
+      datumMap.set(datumStr, true);
+    }
+  }
+
+  const personalData = personal.getDataRange().getValues();
+  const skiftTillNamn = {};
+  for (let i = 1; i < personalData.length; i++) {
+    const rad = personalData[i];
+    const skift = rad[0]?.toString().replace(/^Skift\s*/i, "");
+    if (skift) {
+      skiftTillNamn[skift] = [rad[1], rad[2], rad[3]].filter(Boolean);
+    }
+  }
+
+  const weekdays = ["Sön", "Mån", "Tis", "Ons", "Tor", "Fre", "Lör"];
+  const färger = {
+    "Mån": "#DCE6F1", "Tis": "#FDE9D9", "Ons": "#EAF1DD",
+    "Tor": "#FFF2CC", "Fre": "#EAD1DC", "Lör": "#D9EAD3", "Sön": "#F4CCCC"
+  };
+
+  const clean = s => s?.toString().replace(/^Skift\s*/i, "");
+  const getDatumFormat = (dag, datum) => {
+    const dagFull = {
+      "Mån": "Måndag", "Tis": "Tisdag", "Ons": "Onsdag",
+      "Tor": "Torsdag", "Fre": "Fredag", "Lör": "Lördag", "Sön": "Söndag"
+    }[dag];
+    const vecka = Utilities.formatDate(datum, "Europe/Stockholm", "w");
+    const datumText = Utilities.formatDate(datum, "Europe/Stockholm", "dd-MM-yyyy");
+    return `${dagFull}\n${datumText}\nVecka ${vecka}`;
+  };
+
+    let sistaDatum = new Date(sheet.getLastRow() > 1 ? sheet.getRange(sheet.getLastRow(), 1).getValue() : veckaStart);
+
+  while (sistaDatum < fyraVeckorFram) {
+    sistaDatum.setDate(sistaDatum.getDate() + 1);
+    const veckodag = weekdays[sistaDatum.getDay()];
+
+    const startdatum = new Date("2025-06-02");
+    const veckonummer = Math.floor((sistaDatum - startdatum) / (7 * 24 * 60 * 60 * 1000)) + 1;
+    const grundvecka = ((veckonummer - 1) % 5) + 1;
+
+    const rad = grund.getDataRange().getValues().find(r =>
+      r[0]?.toString().includes(`v.${grundvecka}`) && r[1] === veckodag
+    );
+
+    if (rad) {
+      const fmSkift = clean(rad[2]);
+      const xtraSkift = (sistaDatum.getDay() >= 1 && sistaDatum.getDay() <= 5) ? clean(rad[3]) : "";
+      const dagSkift = (sistaDatum.getDay() >= 1 && sistaDatum.getDay() <= 5 && rad[4] === "Dagtid") ? "Dagtid" : "";
+      const emSkift = clean(rad[5]);
+      const nattSkift = (sistaDatum.getDay() >= 0 && sistaDatum.getDay() <= 4) ? clean(rad[6]) : "";
+
+      function formatSkift(skift) {
+        if (!skift || !skiftTillNamn[skift]) return "";
+        const namn = skiftTillNamn[skift].join("\n");
+        const skiftLabel = `Skift ${skift}`;
+        const richText = SpreadsheetApp.newRichTextValue()
+          .setText(`${skiftLabel}\n${namn}`)
+          .setTextStyle(0, skiftLabel.length, SpreadsheetApp.newTextStyle().setBold(true).build())
+          .build();
+        return richText;
+      }
+
+      const fmCell = formatSkift(fmSkift);
+      const xtraCell = formatSkift(xtraSkift);
+      const emCell = formatSkift(emSkift);
+      const nattCell = formatSkift(nattSkift);
+      const dagText = dagSkift === "Dagtid" && skiftTillNamn["Dagtid"] ? skiftTillNamn["Dagtid"].join("\n") : "";
+
+      const radIndex = sheet.appendRow(["", "", "", "", "", "", ""]) && sheet.getLastRow();
+      sheet.getRange(radIndex, 1).setValue(getDatumFormat(veckodag, sistaDatum));
+      sheet.getRange(radIndex, 1).setBackground(färger[veckodag] || "#ffffff").setFontWeight("bold");
+      sheet.getRange(radIndex, 2).setRichTextValue(fmCell);
+      sheet.getRange(radIndex, 3).setRichTextValue(xtraCell);
+      sheet.getRange(radIndex, 4).setValue(dagText);
+      sheet.getRange(radIndex, 5).setRichTextValue(emCell);
+      sheet.getRange(radIndex, 6).setRichTextValue(nattCell);
+
+      // Validering för Xtra
+      if (xtraSkift && skiftTillNamn[xtraSkift]) {
+        const validering = SpreadsheetApp.newDataValidation()
+          .requireValueInList(skiftTillNamn[xtraSkift], true)
+          .setAllowInvalid(true)
+          .build();
+        sheet.getRange(radIndex, 3).setDataValidation(validering);
+      }
+
+      // Extra tom rad efter söndag
+      if (veckodag === "Sön") {
+        sheet.appendRow(["", "", "", "", "", "", ""]);
+      }
+    }
+  }
+}
+
 
